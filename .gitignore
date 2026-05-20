@@ -1,0 +1,33 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+pubspec.lock
+
+# Android generated
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug.keystore
+
+# Android JNI libs — built locally, not committed
+android/app/src/main/jniLibs/
+
+# Native build output
+native/build/
+native/whisper_cpp/build/
+
+# Model files — too large and may have license restrictions
+*.bin
+*.gguf
+*.pt
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
