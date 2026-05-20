@@ -1,0 +1,19 @@
+name: WhisperBindings
+description: Auto-generated Dart FFI bindings for whisper_bridge.h.
+             Run: dart run ffigen --config ffigen.yaml
+
+output: 'lib/core/stt/whisper_ffi_generated.dart'
+
+headers:
+  entry-points:
+    - native/whisper_bridge.h
+
+compiler-opts:
+  - '-I native/whisper_cpp'
+  - '-x c'
+
+functions:
+  include:
+    - whisper_bridge_init
+    - whisper_bridge_free
+    - whisper_bridge_transcribe
