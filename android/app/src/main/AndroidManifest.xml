@@ -12,6 +12,13 @@
     <!-- Notification permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Exact alarm scheduling -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Android 13+ exact alarm (calendar/alarm apps) -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- Survive device reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application
         android:label="Murmur"
         android:name="${applicationName}"
@@ -42,6 +49,15 @@
             android:name=".MurmurForegroundService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- android_alarm_manager_plus -->
+        <receiver
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.AlarmBroadcastReceiver"
+            android:exported="false" />
+        <service
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.AlarmService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <meta-data
             android:name="flutterEmbedding"

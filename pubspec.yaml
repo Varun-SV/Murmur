@@ -15,6 +15,13 @@ dependencies:
   shared_preferences: ^2.3.0
   logging: ^1.0.0
   ffi: ^2.1.0
+  flutter_onnxruntime: ^1.0.0
+  sqflite: ^2.3.0
+  flutter_local_notifications: ^17.0.0
+  android_alarm_manager_plus: ^4.0.0
+  path_provider: ^2.1.0
+  timezone: ^0.9.0
+  path: ^1.9.0
 
 dev_dependencies:
   flutter_test:
@@ -24,3 +31,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/patterns/reminder_patterns.json

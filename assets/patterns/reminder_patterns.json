@@ -1,0 +1,148 @@
+{
+  "en": [
+    {
+      "pattern": "remind(?:er)?(?:\\s+me)?\\s+to\\s+(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "remind me to call John at 3pm"
+    },
+    {
+      "pattern": "(?:set\\s+(?:a\\s+)?)?reminder\\s+(?:for\\s+)?(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "set a reminder for the meeting at 10am"
+    },
+    {
+      "pattern": "don'?t\\s+(?:let\\s+me\\s+)?forget\\s+(?:to\\s+)?(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "don't forget to pick up the kids"
+    },
+    {
+      "pattern": "(?:i|we)\\s+need\\s+to\\s+(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "I need to submit the report by 5pm"
+    },
+    {
+      "pattern": "(?:i|we)\\s+(?:have\\s+to|must|should)\\s+(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "we have to leave by 9"
+    },
+    {
+      "pattern": "(?:make\\s+(?:a\\s+)?note|note\\s+(?:to\\s+self|that))(?:\\s+(?:to\\s+)?)?(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "make a note to call the dentist"
+    },
+    {
+      "pattern": "add\\s+(?:a\\s+)?(?:task|to-?do|item)\\s+(?:to\\s+(?:my\\s+)?list\\s+)?(?:to\\s+)?(.+?)(?:\\s+(?:at|by|on|tomorrow|today|in)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "add a task to buy groceries"
+    }
+  ],
+  "hi": [
+    {
+      "pattern": "मुझे\\s+(.+?)\\s+(?:याद|remind)\\s+(?:दिलाना|करना|कराना)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "मुझे दवाई लेना याद दिलाना"
+    },
+    {
+      "pattern": "(.+?)\\s+(?:करना|लेना|देना)\\s+(?:है|हैं|होगा)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "रिपोर्ट जमा करना है"
+    },
+    {
+      "pattern": "(?:याद रखना|याद रहे)\\s+(?:कि\\s+)?(.+?)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "याद रखना कि मीटिंग है"
+    }
+  ],
+  "es": [
+    {
+      "pattern": "(?:recuérdame|recuerda(?:me)?)\\s+(?:que\\s+)?(?:tengo\\s+que\\s+|debo\\s+)?(.+?)(?:\\s+(?:a las?|mañana|hoy|en)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "recuérdame llamar al médico"
+    },
+    {
+      "pattern": "(?:tengo\\s+que|debo|necesito)\\s+(.+?)(?:\\s+(?:a las?|mañana|hoy|en)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "tengo que comprar leche"
+    },
+    {
+      "pattern": "no\\s+(?:me\\s+)?olvid(?:ar|es)\\s+(?:de\\s+)?(.+?)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "no olvides el paraguas"
+    }
+  ],
+  "fr": [
+    {
+      "pattern": "(?:rappelle(?:-moi)?|n'oublie\\s+pas(?:\\s+de)?)\\s+(?:de\\s+)?(.+?)(?:\\s+(?:à|demain|aujourd'hui|dans)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "rappelle-moi d'appeler le médecin"
+    },
+    {
+      "pattern": "(?:je\\s+dois|il\\s+faut\\s+que\\s+je)\\s+(.+?)(?:\\s+(?:à|demain|aujourd'hui|dans)\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "je dois prendre mes médicaments"
+    },
+    {
+      "pattern": "pense\\s+à\\s+(.+?)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "pense à acheter du pain"
+    }
+  ],
+  "ja": [
+    {
+      "pattern": "(.+?)(?:を|に)\\s*(?:忘れずに|リマインド|思い出させて)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "薬を忘れずに"
+    },
+    {
+      "pattern": "(.+?)(?:しなければならない|しないといけない|する必要がある)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "レポートを提出しなければならない"
+    }
+  ],
+  "ml": [
+    {
+      "pattern": "(?:എനിക്ക്|നമുക്ക്)\\s+(.+?)\\s+(?:ഓർക്കണം|ഓർമ്മിപ്പിക്കണം)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "എനിക്ക് മരുന്ന് കഴിക്കണം ഓർക്കണം"
+    },
+    {
+      "pattern": "(.+?)\\s+(?:ചെയ്യണം|വേണം|കഴിക്കണം)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "മരുന്ന് കഴിക്കണം"
+    }
+  ],
+  "bn": [
+    {
+      "pattern": "(?:আমাকে|আমার)\\s+(.+?)\\s+(?:মনে করিয়ে দাও|মনে রাখতে হবে)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "আমাকে ওষুধ খেতে মনে করিয়ে দাও"
+    },
+    {
+      "pattern": "(.+?)\\s+(?:করতে হবে|কিনতে হবে|নিতে হবে)(?:\\s+(.+?))?\\s*$",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "রিপোর্ট জমা দিতে হবে"
+    }
+  ]
+}

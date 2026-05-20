@@ -1,15 +1,25 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logging/logging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:murmur/core/audio/audio_capture_service.dart';
 import 'package:murmur/core/audio/ring_buffer.dart';
+import 'package:murmur/core/nlp/rule_engine.dart';
+import 'package:murmur/core/nlp/time_parser.dart';
 import 'package:murmur/core/result.dart';
 import 'package:murmur/core/stt/whisper_service.dart';
+import 'package:murmur/data/database/reminder_dao.dart';
+import 'package:murmur/data/models/reminder.dart';
+import 'package:murmur/features/reminders/reminders_provider.dart';
+import 'package:murmur/features/settings/settings_provider.dart';
 import 'package:murmur/features/transcript/transcript_provider.dart';
+import 'package:murmur/services/model_manager.dart';
+import 'package:murmur/services/notification_service.dart';
+import 'package:murmur/services/scheduler_service.dart';
 
 final _log = Logger('PipelineOrchestrator');
 
@@ -45,6 +55,8 @@ final _whisperServiceProvider = Provider<WhisperService>((ref) {
   ref.onDispose(() => svc.dispose());
   return svc;
 });
+final _ruleEngineProvider = Provider<RuleEngine>((ref) => RuleEngine());
+
 
 // ── Notifier ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +64,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
   late final AudioCaptureService _audioSvc;
   late final WhisperService _whisperSvc;
   late final RingBuffer _ringBuffer;
+  late final RuleEngine _ruleEngine;
 
   StreamSubscription<Uint8List>? _pcmSub;
   Timer? _flushTimer;
@@ -65,6 +78,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _audioSvc = ref.read(_audioCaptureProvider);
     _whisperSvc = ref.read(_whisperServiceProvider);
     _ringBuffer = ref.read(_ringBufferProvider);
+    _ruleEngine = ref.read(_ruleEngineProvider);
     ref.onDispose(_cleanup);
     return const PipelineIdle();
   }
@@ -89,7 +103,35 @@ class PipelineNotifier extends Notifier<PipelineState> {
         break;
     }
 
-    // Subscribe to PCM stream before starting capture to avoid losing frames.
+    // Load VAD model if enabled — failures degrade gracefully (no VAD gate).
+    final settings = await ref.read(settingsProvider.future);
+    if (settings.vadEnabled) {
+      final modelResult =
+          await ref.read(modelManagerProvider).getVadModelPath();
+      switch (modelResult) {
+        case Ok(:final value):
+          final vadInit = await _whisperSvc.initVad(value);
+          switch (vadInit) {
+            case Err(:final message):
+              _log.warning('VAD init failed: $message — running without VAD');
+            case Ok():
+              break;
+          }
+        case Err(:final message):
+          _log.warning('VAD model unavailable: $message — running without VAD');
+      }
+    }
+
+    // Load rule engine patterns.
+    final engineResult = await _ruleEngine.load(rootBundle);
+    switch (engineResult) {
+      case Err(:final message):
+        _log.warning('Rule engine load failed: $message');
+      case Ok():
+        break;
+    }
+
+    // Subscribe before starting capture to avoid losing early frames.
     _pcmSub = _audioSvc.pcmStream.listen(
       (chunk) => _ringBuffer.write(chunk),
       onError: (Object e, StackTrace st) {
@@ -137,27 +179,83 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _log.info(
         'Transcribing ${pcm.length} samples (${(pcm.length / 16000).toStringAsFixed(1)}s)');
 
-    final result = await _whisperSvc.transcribe(pcm);
+    final settings =
+        ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+    final result = await _whisperSvc.detectAndTranscribe(
+      pcm,
+      vadThreshold: settings.vadEnabled ? settings.vadThreshold : 0.0,
+    );
 
     _isTranscribing = false;
 
-    result.fold(
-      ok: (tr) {
-        _log.info(
-            'Transcript: "${tr.text}" (${tr.language}, conf=${tr.confidence.toStringAsFixed(2)})');
-        ref.read(transcriptProvider.notifier).add(TranscriptEntry(
-              text: tr.text,
-              language: tr.language,
-              confidence: tr.confidence,
-              timestamp: DateTime.now(),
-            ));
-      },
-      err: (msg) => _log.warning('Transcription failed: $msg'),
-    );
+    switch (result) {
+      case Ok(:final value):
+        if (value == null) {
+          _log.fine('VAD: silent segment, skipping transcription');
+          break;
+        }
+        await _onTranscript(value);
+      case Err(:final message):
+        _log.warning('Transcription failed: $message');
+    }
 
-    // Only update state if we're still recording (stopPipeline may have been called).
     if (state is PipelineTranscribing) {
       state = const PipelineRecording();
+    }
+  }
+
+  Future<void> _onTranscript(TranscriptResult tr) async {
+    _log.info(
+        'Transcript: "${tr.text}" (${tr.language}, conf=${tr.confidence.toStringAsFixed(2)})');
+
+    ref.read(transcriptProvider.notifier).add(TranscriptEntry(
+          text: tr.text,
+          language: tr.language,
+          confidence: tr.confidence,
+          timestamp: DateTime.now(),
+        ));
+
+    final match = _ruleEngine.match(tr.text, tr.language);
+    if (match == null) {
+      _log.fine('No rule match for: "${tr.text}"');
+      return;
+    }
+    _log.info('Rule match: task="${match.task}", timeStr="${match.timeStr}"');
+
+    final scheduledAt =
+        match.timeStr != null ? TimeParser.parse(match.timeStr!) : null;
+
+    final reminder = Reminder(
+      task: match.task,
+      timeStr: match.timeStr,
+      scheduledAt: scheduledAt,
+      speakerId: 'unknown',
+      language: tr.language,
+      confidence: tr.confidence,
+      transcriptSnippet: tr.text,
+      status: ReminderStatus.pending,
+      createdAt: DateTime.now(),
+    );
+
+    final dao = ref.read(reminderDaoProvider);
+    final insertResult = await dao.insert(reminder);
+
+    switch (insertResult) {
+      case Err(:final message):
+        _log.severe('Failed to insert reminder: $message');
+        return;
+      case Ok(:final value):
+        ref.read(remindersProvider.notifier).refresh();
+
+        if (scheduledAt != null) {
+          await ref
+              .read(schedulerServiceProvider)
+              .scheduleReminder(value, match.task, scheduledAt);
+        } else {
+          await ref
+              .read(notificationServiceProvider)
+              .showImmediate(value, match.task);
+        }
     }
   }
 
