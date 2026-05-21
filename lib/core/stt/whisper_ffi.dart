@@ -1,4 +1,5 @@
 import 'dart:ffi';
+import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
@@ -33,17 +34,19 @@ typedef _TranscribeDart = int Function(
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Lazily-loaded Dart bindings for libwhisper.so.
+/// Lazily-loaded Dart bindings for the native Whisper bridge library.
 ///
 /// These are hand-written to match whisper_bridge.h exactly.
 /// Regenerate with ffigen if the C API changes:
 ///   dart run ffigen --config ffigen.yaml
 ///
-/// Throws [ArgumentError] on platforms where libwhisper.so is unavailable.
+/// Throws [ArgumentError] on platforms where the library is unavailable.
 /// [WhisperService.initialize] catches this and converts it to [Err].
 class WhisperFfi {
   WhisperFfi._() {
-    final lib = DynamicLibrary.open('libmurmur_bridge.so');
+    final lib = DynamicLibrary.open(
+      Platform.isIOS ? 'libmurmur_bridge.dylib' : 'libmurmur_bridge.so',
+    );
     init = lib.lookupFunction<_InitNative, _InitDart>('whisper_bridge_init');
     free = lib.lookupFunction<_FreeNative, _FreeDart>('whisper_bridge_free');
     transcribe =
@@ -52,7 +55,7 @@ class WhisperFfi {
 
   static WhisperFfi? _instance;
 
-  /// Returns the process-wide singleton. Throws if libwhisper.so cannot be loaded.
+  /// Returns the process-wide singleton. Throws if the native library cannot be loaded.
   static WhisperFfi get instance => _instance ??= WhisperFfi._();
 
   late final _InitDart init;

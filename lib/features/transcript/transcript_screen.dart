@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:murmur/features/settings/settings_provider.dart';
 import 'package:murmur/features/transcript/transcript_provider.dart';
 import 'package:murmur/services/pipeline_orchestrator.dart';
 
@@ -13,35 +13,13 @@ class TranscriptScreen extends ConsumerStatefulWidget {
 }
 
 class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
-  late final TextEditingController _modelPathCtrl;
-  late final ScrollController _scrollCtrl;
-
-  static const _defaultModelPath = '/sdcard/Download/whisper-base.bin';
-
-  @override
-  void initState() {
-    super.initState();
-    _modelPathCtrl = TextEditingController(text: _defaultModelPath);
-    _scrollCtrl = ScrollController();
-    _loadModelPath();
-  }
+  final _scrollCtrl = ScrollController();
+  bool _degradedBannerDismissed = false;
 
   @override
   void dispose() {
-    _modelPathCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadModelPath() async {
-    final prefs = await SharedPreferences.getInstance();
-    final path = prefs.getString('model_path') ?? _defaultModelPath;
-    if (mounted) setState(() => _modelPathCtrl.text = path);
-  }
-
-  Future<void> _saveModelPath(String path) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('model_path', path);
   }
 
   void _scrollToBottom() {
@@ -65,6 +43,18 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       if (next.length > (previous?.length ?? 0)) _scrollToBottom();
     });
 
+    // Reset banner dismissal when pipeline restarts.
+    ref.listen(pipelineProvider, (previous, next) {
+      if (previous is! PipelineRecording && next is PipelineRecording) {
+        setState(() => _degradedBannerDismissed = false);
+      }
+    });
+
+    final degraded = switch (pipeline) {
+      PipelineRecording(:final degradedFeatures) => degradedFeatures,
+      _ => const <String>[],
+    };
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Murmur'),
@@ -80,19 +70,21 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: TextField(
-              controller: _modelPathCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Whisper model path',
-                hintText: '/sdcard/Download/whisper-base.bin',
-                border: OutlineInputBorder(),
-                isDense: true,
+          // Degraded-mode banner
+          if (degraded.isNotEmpty && !_degradedBannerDismissed)
+            MaterialBanner(
+              content: Text(
+                'Running without: ${degraded.join(', ')}. '
+                'Check model paths in Settings.',
               ),
-              onSubmitted: _saveModelPath,
+              actions: [
+                TextButton(
+                  onPressed: () =>
+                      setState(() => _degradedBannerDismissed = true),
+                  child: const Text('Dismiss'),
+                ),
+              ],
             ),
-          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
@@ -157,30 +149,36 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     final notifier = ref.read(pipelineProvider.notifier);
     switch (state) {
       case PipelineIdle() || PipelineError():
-        await _saveModelPath(_modelPathCtrl.text);
+        // Sync the whisper model path from settings before starting.
         await notifier.startPipeline();
-      case PipelineRecording() || PipelineTranscribing():
+      case PipelineRecording() || PipelineTranscribing() || PipelinePaused():
         await notifier.stopPipeline();
     }
   }
 
   static String _statusLabel(PipelineState s) => switch (s) {
         PipelineIdle() => 'Idle',
+        PipelineRecording(degradedFeatures: final d) when d.isNotEmpty =>
+          'Recording (degraded)',
         PipelineRecording() => 'Recording…',
         PipelineTranscribing() => 'Transcribing…',
+        PipelinePaused() => 'Paused',
         PipelineError(:final message) => 'Error: $message',
       };
 
   static Widget _fabIcon(PipelineState s) => switch (s) {
         PipelineIdle() => const Icon(Icons.mic),
-        PipelineRecording() => const Icon(Icons.stop),
-        PipelineTranscribing() => const Icon(Icons.hourglass_bottom),
+        PipelineRecording() || PipelineTranscribing() => const Icon(Icons.stop),
+        PipelinePaused() => const Icon(Icons.stop),
         PipelineError() => const Icon(Icons.refresh),
       };
 
   static String _fabTooltip(PipelineState s) => switch (s) {
         PipelineIdle() || PipelineError() => 'Start listening',
-        PipelineRecording() || PipelineTranscribing() => 'Stop listening',
+        PipelineRecording() ||
+        PipelineTranscribing() ||
+        PipelinePaused() =>
+          'Stop listening',
       };
 
   static String _formatTime(DateTime dt) =>

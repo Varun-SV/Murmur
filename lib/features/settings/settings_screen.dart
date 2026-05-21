@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:murmur/core/result.dart';
 import 'package:murmur/features/settings/settings_provider.dart';
 import 'package:murmur/services/model_manager.dart';
-
-final _vadDownloadProgressProvider = StreamProvider<double?>(
-  (ref) => ref.read(modelManagerProvider).downloadProgress,
-);
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -64,10 +61,12 @@ class SettingsScreen extends ConsumerWidget {
               onChanged: (v) =>
                   ref.read(settingsProvider.notifier).setSpeakerEncoderEnabled(v),
             ),
-            ListTile(
-              title: const Text('Speaker model path'),
-              subtitle: Text(settings.speakerModelPath),
+            _ModelPathTile(
+              title: 'Speaker model path',
+              path: settings.speakerModelPath,
               enabled: settings.speakerEncoderEnabled,
+              onSave: (p) =>
+                  ref.read(settingsProvider.notifier).setSpeakerModelPath(p),
             ),
             const Divider(),
             const _SectionHeader('LLM Extraction'),
@@ -78,16 +77,21 @@ class SettingsScreen extends ConsumerWidget {
               onChanged: (v) =>
                   ref.read(settingsProvider.notifier).setLlmEnabled(v),
             ),
-            ListTile(
-              title: const Text('Gemma model path'),
-              subtitle: Text(settings.gemmaModelPath),
+            _ModelPathTile(
+              title: 'Gemma model path',
+              path: settings.gemmaModelPath,
               enabled: settings.llmEnabled,
+              onSave: (p) =>
+                  ref.read(settingsProvider.notifier).setGemmaModelPath(p),
             ),
             const Divider(),
             const _SectionHeader('Models'),
-            ListTile(
-              title: const Text('Whisper model path'),
-              subtitle: Text(settings.whisperModelPath),
+            _ModelPathTile(
+              title: 'Whisper model path',
+              path: settings.whisperModelPath,
+              enabled: true,
+              onSave: (p) =>
+                  ref.read(settingsProvider.notifier).setWhisperModelPath(p),
             ),
             const _VadModelTile(),
           ],
@@ -97,40 +101,129 @@ class SettingsScreen extends ConsumerWidget {
   }
 }
 
-class _VadModelTile extends ConsumerWidget {
+/// Tappable model-path tile that opens an edit dialog.
+class _ModelPathTile extends StatelessWidget {
+  const _ModelPathTile({
+    required this.title,
+    required this.path,
+    required this.enabled,
+    required this.onSave,
+  });
+
+  final String title;
+  final String path;
+  final bool enabled;
+  final void Function(String) onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(title),
+      subtitle: Text(
+        path,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      enabled: enabled,
+      trailing: enabled ? const Icon(Icons.edit_outlined, size: 18) : null,
+      onTap: enabled ? () => _showEditDialog(context) : null,
+    );
+  }
+
+  Future<void> _showEditDialog(BuildContext context) async {
+    final ctrl = TextEditingController(text: path);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Edit $title'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            helperText: 'Full path on device, e.g. /sdcard/Download/…',
+          ),
+          autofocus: true,
+          onSubmitted: (_) => Navigator.pop(ctx, true),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (confirmed == true) onSave(ctrl.text.trim());
+  }
+}
+
+/// VAD model download tile with progress indicator and SnackBar feedback.
+class _VadModelTile extends ConsumerStatefulWidget {
   const _VadModelTile();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final progress = ref.watch(_vadDownloadProgressProvider);
+  ConsumerState<_VadModelTile> createState() => _VadModelTileState();
+}
 
+class _VadModelTileState extends ConsumerState<_VadModelTile> {
+  bool _downloading = false;
+
+  @override
+  Widget build(BuildContext context) {
     return ListTile(
       title: const Text('Silero VAD model'),
-      subtitle: progress.when(
-        loading: () => const Text('Checking...'),
-        error: (err, _) => Text('Error: $err'),
-        data: (p) {
-          if (p == null) {
-            return const Text('Downloaded');
+      subtitle: StreamBuilder<double?>(
+        stream: ref.read(modelManagerProvider).downloadProgress,
+        builder: (context, snap) {
+          if (_downloading && snap.hasData && snap.data != null) {
+            final p = snap.data!;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Downloading: ${(p * 100).toStringAsFixed(0)}%'),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(value: p),
+              ],
+            );
           }
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Downloading: ${(p * 100).toStringAsFixed(0)}%'),
-              const SizedBox(height: 4),
-              LinearProgressIndicator(value: p),
-            ],
-          );
+          return const Text('Tap to download / re-download');
         },
       ),
-      trailing: IconButton(
-        icon: const Icon(Icons.download),
-        tooltip: 'Re-download VAD model',
-        onPressed: () {
-          ref.read(modelManagerProvider).getVadModelPath();
-        },
-      ),
+      trailing: _downloading
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : IconButton(
+              icon: const Icon(Icons.download),
+              tooltip: 'Download VAD model',
+              onPressed: _download,
+            ),
     );
+  }
+
+  Future<void> _download() async {
+    setState(() => _downloading = true);
+    final result = await ref.read(modelManagerProvider).getVadModelPath();
+    if (!mounted) return;
+    setState(() => _downloading = false);
+    final messenger = ScaffoldMessenger.of(context);
+    switch (result) {
+      case Ok():
+        messenger.showSnackBar(
+          const SnackBar(content: Text('VAD model ready')),
+        );
+      case Err(:final message):
+        messenger.showSnackBar(
+          SnackBar(content: Text('Download failed: $message')),
+        );
+    }
   }
 }
 

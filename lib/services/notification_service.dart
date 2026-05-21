@@ -20,10 +20,18 @@ class NotificationService {
     try {
       const androidSettings =
           AndroidInitializationSettings('@mipmap/ic_launcher');
-      const initSettings = InitializationSettings(android: androidSettings);
+      const iosSettings = DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+      const initSettings = InitializationSettings(
+        android: androidSettings,
+        iOS: iosSettings,
+      );
       await _plugin.initialize(initSettings);
 
-      // Create the Android notification channel
+      // Create the Android notification channel (no-op on iOS).
       const channel = AndroidNotificationChannel(
         _channelId,
         _channelName,
@@ -51,7 +59,15 @@ class NotificationService {
         importance: Importance.high,
         priority: Priority.high,
       );
-      const details = NotificationDetails(android: androidDetails);
+      const iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+      const details = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
       await _plugin.show(id, 'Reminder', task, details);
       _log.info('Showed notification #$id: $task');
       return const Ok(null);
