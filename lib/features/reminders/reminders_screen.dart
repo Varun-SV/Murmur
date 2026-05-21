@@ -5,6 +5,8 @@ import 'package:murmur/data/models/reminder.dart';
 import 'package:murmur/features/reminders/reminder_card.dart';
 import 'package:murmur/features/reminders/reminders_provider.dart';
 
+const _snoozeDuration = Duration(minutes: 15);
+
 class RemindersScreen extends ConsumerStatefulWidget {
   const RemindersScreen({super.key});
 
@@ -25,6 +27,7 @@ class _RemindersScreenState extends ConsumerState<RemindersScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
             onPressed: () => ref.read(remindersProvider.notifier).refresh(),
           ),
         ],
@@ -42,8 +45,20 @@ class _RemindersScreenState extends ConsumerState<RemindersScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('Error: $err'),
-                    TextButton(
+                    const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Could not load reminders',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      err.toString(),
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
                       onPressed: () =>
                           ref.read(remindersProvider.notifier).refresh(),
                       child: const Text('Retry'),
@@ -59,7 +74,7 @@ class _RemindersScreenState extends ConsumerState<RemindersScreen> {
                         .toList();
 
                 if (filtered.isEmpty) {
-                  return const Center(child: Text('No reminders'));
+                  return _EmptyState(filter: _filter);
                 }
 
                 return ListView.builder(
@@ -74,6 +89,9 @@ class _RemindersScreenState extends ConsumerState<RemindersScreen> {
                       onDismiss: () => ref
                           .read(remindersProvider.notifier)
                           .dismiss(reminder.id!),
+                      onSnooze: () => ref
+                          .read(remindersProvider.notifier)
+                          .snooze(reminder.id!, _snoozeDuration),
                     );
                   },
                 );
@@ -81,6 +99,71 @@ class _RemindersScreenState extends ConsumerState<RemindersScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.filter});
+
+  final ReminderStatus? filter;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final (icon, title, subtitle) = switch (filter) {
+      ReminderStatus.pending => (
+          Icons.notifications_none,
+          'No pending reminders',
+          'Speak naturally — Murmur will pick up reminder phrases.',
+        ),
+      ReminderStatus.confirmed => (
+          Icons.check_circle_outline,
+          'No confirmed reminders',
+          'Confirm reminders to track what you\'ve acted on.',
+        ),
+      ReminderStatus.dismissed => (
+          Icons.do_not_disturb_on_outlined,
+          'No dismissed reminders',
+          'Dismissed reminders will appear here.',
+        ),
+      ReminderStatus.snoozed => (
+          Icons.snooze,
+          'No snoozed reminders',
+          'Snoozed reminders will reappear in 15 minutes.',
+        ),
+      null => (
+          Icons.notifications_active_outlined,
+          'No reminders yet',
+          'Start recording and speak naturally.\nMurmur will detect reminder phrases automatically.',
+        ),
+    };
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 64, color: theme.colorScheme.primary.withOpacity(0.4)),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: theme.textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withOpacity(0.6),
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -106,6 +189,8 @@ class _FilterChips extends StatelessWidget {
           _chip(ReminderStatus.confirmed, 'Confirmed'),
           const SizedBox(width: 8),
           _chip(ReminderStatus.dismissed, 'Dismissed'),
+          const SizedBox(width: 8),
+          _chip(ReminderStatus.snoozed, 'Snoozed'),
         ],
       ),
     );

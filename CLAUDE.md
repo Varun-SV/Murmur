@@ -119,9 +119,12 @@ Models live outside the repo. See developer setup below.
 | LLM extraction | mediapipe_llm_inference | ^0.10.x |
 | Database | sqflite | ^2.3.x |
 | Notifications | flutter_local_notifications | ^17.x |
-| Alarm scheduling | android_alarm_manager_plus | ^4.x |
+| Alarm scheduling | android_alarm_manager_plus | ^4.x (Android); flutter_local_notifications zonedSchedule (iOS) |
 | Shared prefs | shared_preferences | ^2.3.x |
 | Logging | logging | ^1.x |
+| Timezone | timezone | ^0.9.x |
+| Path utilities | path_provider | ^2.1.x |
+| Path utilities | path | ^1.9.x |
 
 Do not add packages outside this list without explicit discussion. Do not use `http`, `dio`, or any networking package.
 
@@ -129,7 +132,10 @@ Do not add packages outside this list without explicit discussion. Do not use `h
 
 ## Platform Channel Contract
 
-The Android ↔ Dart boundary is owned by `AudioCaptureChannel.kt` and `audio_capture_service.dart`. Do not change the channel names or method signatures without updating both sides.
+The platform ↔ Dart boundary is owned by the platform channel implementations and `audio_capture_service.dart`. Do not change the channel names or method signatures without updating both sides.
+
+- **Android:** `AudioCaptureChannel.kt` + `MurmurForegroundService.kt`
+- **iOS:** `ios/Runner/AudioCaptureChannel.swift`
 
 ```
 MethodChannel: "com.murmur.audio/capture"
@@ -284,6 +290,8 @@ flutter run --dart-define=LOG_LEVEL=FINEST
 
 ## Developer Setup (first time)
 
+### Android
+
 ```bash
 # 1. Pull the whisper.cpp submodule
 git submodule update --init native/whisper_cpp
@@ -309,6 +317,35 @@ adb push ggml-base.bin /sdcard/Download/whisper-base.bin
 flutter run
 ```
 
+### iOS (requires macOS with Xcode ≥ 15)
+
+```bash
+# 1. Scaffold the iOS project (generates Runner.xcodeproj, Podfile, etc.)
+flutter create --platforms=ios .
+
+# 2. Build libmurmur_bridge.dylib for iOS arm64
+cmake -G Xcode -B build/ios \
+  -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+  native/
+cmake --build build/ios --target murmur_bridge --config Release
+
+# 3. Copy the dylib into the iOS Frameworks directory
+mkdir -p ios/Frameworks
+cp build/ios/Release-iphoneos/libmurmur_bridge.dylib ios/Frameworks/
+# Add ios/Frameworks/libmurmur_bridge.dylib to the Runner target in Xcode
+# (Build Phases → Embed Frameworks)
+
+# 4. Copy model files to the device via Xcode or Files app
+#    Default paths expected by the app:
+#    /private/var/mobile/Containers/Data/Application/<UUID>/Documents/whisper-base.bin
+#    (update Settings screen paths after first launch)
+
+# 5. Run
+flutter run -d <ios-device-udid>
+```
+
 ---
 
 ## DO NOTs
@@ -329,7 +366,7 @@ flutter run
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Mic → ring buffer → Whisper → console transcript | 🟡 In progress |
-| 2 | VAD + rule engine + SQLite + notifications + basic UI | 🔴 Not started |
-| 3 | Gemma LLM extraction + speaker diarization | 🔴 Not started |
-| 4 | Polish + iOS port | 🔴 Not started |
+| 1 | Mic → ring buffer → Whisper → console transcript | ✅ Done |
+| 2 | VAD + rule engine + SQLite + notifications + basic UI | ✅ Done |
+| 3 | Gemma LLM extraction + speaker diarization | ✅ Done |
+| 4 | Polish + iOS port | ✅ Done |

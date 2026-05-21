@@ -8,11 +8,13 @@ class ReminderCard extends StatelessWidget {
     required this.reminder,
     required this.onConfirm,
     required this.onDismiss,
+    required this.onSnooze,
   });
 
   final Reminder reminder;
   final VoidCallback onConfirm;
   final VoidCallback onDismiss;
+  final VoidCallback onSnooze;
 
   @override
   Widget build(BuildContext context) {
@@ -23,9 +25,11 @@ class ReminderCard extends StatelessWidget {
     Color? cardColor;
     switch (reminder.status) {
       case ReminderStatus.confirmed:
-        cardColor = Colors.green.shade50;
+        cardColor = theme.colorScheme.primaryContainer.withOpacity(0.3);
       case ReminderStatus.dismissed:
-        cardColor = Colors.grey.shade100;
+        cardColor = theme.colorScheme.surfaceContainerHighest;
+      case ReminderStatus.snoozed:
+        cardColor = theme.colorScheme.secondaryContainer.withOpacity(0.3);
       default:
         cardColor = null;
     }
@@ -75,7 +79,7 @@ class ReminderCard extends StatelessWidget {
               height: 4,
               child: LinearProgressIndicator(
                 value: reminder.confidence,
-                backgroundColor: Colors.grey.shade200,
+                backgroundColor: theme.colorScheme.surfaceContainerHighest,
               ),
             ),
             if (reminder.transcriptSnippet != null) ...[
@@ -98,6 +102,11 @@ class ReminderCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton(
+                  onPressed: isDone ? null : onSnooze,
+                  child: const Text('Snooze 15m'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
                   onPressed: isDone ? null : onConfirm,
                   child: const Text('Confirm'),
                 ),
@@ -111,10 +120,12 @@ class ReminderCard extends StatelessWidget {
 
   String _formatDateTime(DateTime dt) {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     final isToday = dt.year == now.year &&
         dt.month == now.month &&
         dt.day == now.day;
-    final isTomorrow = dt.difference(DateTime(now.year, now.month, now.day)).inDays == 1;
+    final isTomorrow =
+        dt.difference(today).inDays == 1;
 
     final timeStr =
         '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';

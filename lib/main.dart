@@ -1,4 +1,5 @@
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logging/logging.dart';
@@ -11,7 +12,10 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   tz.initializeTimeZones();
-  await AndroidAlarmManager.initialize();
+
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await AndroidAlarmManager.initialize();
+  }
 
   Logger.root.level = Level.ALL;
   Logger.root.onRecord.listen((rec) {

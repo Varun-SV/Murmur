@@ -4,19 +4,21 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logging/logging.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:murmur/core/audio/audio_capture_service.dart';
 import 'package:murmur/core/audio/ring_buffer.dart';
 import 'package:murmur/core/nlp/rule_engine.dart';
 import 'package:murmur/core/nlp/time_parser.dart';
 import 'package:murmur/core/result.dart';
+import 'package:murmur/core/stt/speaker_registry.dart';
 import 'package:murmur/core/stt/whisper_service.dart';
 import 'package:murmur/data/database/reminder_dao.dart';
 import 'package:murmur/data/models/reminder.dart';
 import 'package:murmur/features/reminders/reminders_provider.dart';
 import 'package:murmur/features/settings/settings_provider.dart';
+import 'package:murmur/features/speakers/speakers_provider.dart';
 import 'package:murmur/features/transcript/transcript_provider.dart';
+import 'package:murmur/services/llm_extractor.dart';
 import 'package:murmur/services/model_manager.dart';
 import 'package:murmur/services/notification_service.dart';
 import 'package:murmur/services/scheduler_service.dart';
@@ -33,12 +35,20 @@ class PipelineIdle extends PipelineState {
   const PipelineIdle();
 }
 
+/// Active recording. [degradedFeatures] lists optional features that failed
+/// to load (VAD, speaker encoder, LLM) so the UI can warn the user.
 class PipelineRecording extends PipelineState {
-  const PipelineRecording();
+  const PipelineRecording({this.degradedFeatures = const []});
+  final List<String> degradedFeatures;
 }
 
 class PipelineTranscribing extends PipelineState {
   const PipelineTranscribing();
+}
+
+/// Paused automatically when the app goes to background.
+class PipelinePaused extends PipelineState {
+  const PipelinePaused();
 }
 
 class PipelineError extends PipelineState {
@@ -57,7 +67,6 @@ final _whisperServiceProvider = Provider<WhisperService>((ref) {
 });
 final _ruleEngineProvider = Provider<RuleEngine>((ref) => RuleEngine());
 
-
 // ── Notifier ──────────────────────────────────────────────────────────────────
 
 class PipelineNotifier extends Notifier<PipelineState> {
@@ -65,13 +74,14 @@ class PipelineNotifier extends Notifier<PipelineState> {
   late final WhisperService _whisperSvc;
   late final RingBuffer _ringBuffer;
   late final RuleEngine _ruleEngine;
+  late final SpeakerRegistry _speakerRegistry;
+  LlmExtractor? _llmExtractor;
 
   StreamSubscription<Uint8List>? _pcmSub;
   Timer? _flushTimer;
   bool _isTranscribing = false;
 
   static const _flushInterval = Duration(seconds: 30);
-  static const _defaultModelPath = '/sdcard/Download/whisper-base.bin';
 
   @override
   PipelineState build() {
@@ -79,6 +89,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _whisperSvc = ref.read(_whisperServiceProvider);
     _ringBuffer = ref.read(_ringBufferProvider);
     _ruleEngine = ref.read(_ruleEngineProvider);
+    _speakerRegistry = SpeakerRegistry();
     ref.onDispose(_cleanup);
     return const PipelineIdle();
   }
@@ -88,11 +99,11 @@ class PipelineNotifier extends Notifier<PipelineState> {
 
     state = const PipelineRecording();
 
-    final prefs = await SharedPreferences.getInstance();
-    final modelPath = prefs.getString('model_path') ?? _defaultModelPath;
+    // Load settings first — all model paths come from here.
+    final settings = await ref.read(settingsProvider.future);
 
-    _log.info('Initialising Whisper with model: $modelPath');
-    final initResult = await _whisperSvc.initialize(modelPath);
+    _log.info('Initialising Whisper with model: ${settings.whisperModelPath}');
+    final initResult = await _whisperSvc.initialize(settings.whisperModelPath);
 
     switch (initResult) {
       case Err(:final message):
@@ -103,8 +114,9 @@ class PipelineNotifier extends Notifier<PipelineState> {
         break;
     }
 
+    final degraded = <String>[];
+
     // Load VAD model if enabled — failures degrade gracefully (no VAD gate).
-    final settings = await ref.read(settingsProvider.future);
     if (settings.vadEnabled) {
       final modelResult =
           await ref.read(modelManagerProvider).getVadModelPath();
@@ -114,12 +126,33 @@ class PipelineNotifier extends Notifier<PipelineState> {
           switch (vadInit) {
             case Err(:final message):
               _log.warning('VAD init failed: $message — running without VAD');
+              degraded.add('VAD');
             case Ok():
               break;
           }
         case Err(:final message):
           _log.warning('VAD model unavailable: $message — running without VAD');
+          degraded.add('VAD');
       }
+    }
+
+    // Init speaker encoder if enabled.
+    if (settings.speakerEncoderEnabled) {
+      final encResult =
+          await _whisperSvc.initSpeakerEncoder(settings.speakerModelPath);
+      switch (encResult) {
+        case Err(:final message):
+          _log.warning(
+              'Speaker encoder init failed: $message — running without diarization');
+          degraded.add('Speaker encoder');
+        case Ok():
+          break;
+      }
+    }
+
+    // Prepare LLM extractor (lazy — not loaded until first use).
+    if (settings.llmEnabled) {
+      _llmExtractor = LlmExtractor(modelPath: settings.gemmaModelPath);
     }
 
     // Load rule engine patterns.
@@ -127,6 +160,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
     switch (engineResult) {
       case Err(:final message):
         _log.warning('Rule engine load failed: $message');
+        degraded.add('Rule engine');
       case Ok():
         break;
     }
@@ -153,13 +187,59 @@ class PipelineNotifier extends Notifier<PipelineState> {
     }
 
     _flushTimer = Timer.periodic(_flushInterval, _onFlushTick);
-    _log.info('Pipeline started — flushing every ${_flushInterval.inSeconds}s');
+    state = PipelineRecording(degradedFeatures: degraded);
+    _log.info(
+        'Pipeline started — flushing every ${_flushInterval.inSeconds}s'
+        '${degraded.isEmpty ? '' : ' (degraded: ${degraded.join(', ')})'}');
   }
 
   Future<void> stopPipeline() async {
     await _cleanup();
     state = const PipelineIdle();
     _log.info('Pipeline stopped');
+  }
+
+  /// Pause when the app goes to background: cancel the timer and PCM
+  /// subscription but leave the Whisper isolate alive for fast resume.
+  Future<void> pausePipeline() async {
+    if (state is! PipelineRecording && state is! PipelineTranscribing) return;
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    await _pcmSub?.cancel();
+    _pcmSub = null;
+    await _audioSvc.stop();
+    _ringBuffer.flush(); // discard stale audio
+    state = const PipelinePaused();
+    _log.info('Pipeline paused');
+  }
+
+  /// Resume after returning to the foreground.
+  Future<void> resumePipeline() async {
+    if (state is! PipelinePaused) return;
+    state = const PipelineRecording();
+
+    _pcmSub = _audioSvc.pcmStream.listen(
+      (chunk) => _ringBuffer.write(chunk),
+      onError: (Object e, StackTrace st) {
+        _log.severe('PCM stream error on resume', e, st);
+        state = PipelineError('Audio stream error: $e');
+      },
+    );
+
+    final startResult = await _audioSvc.start();
+    switch (startResult) {
+      case Err(:final message):
+        await _pcmSub?.cancel();
+        _pcmSub = null;
+        state = PipelineError(message);
+        _log.severe('Audio resume failed: $message');
+        return;
+      case Ok():
+        break;
+    }
+
+    _flushTimer = Timer.periodic(_flushInterval, _onFlushTick);
+    _log.info('Pipeline resumed');
   }
 
   void _onFlushTick(Timer _) async {
@@ -208,6 +288,19 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _log.info(
         'Transcript: "${tr.text}" (${tr.language}, conf=${tr.confidence.toStringAsFixed(2)})');
 
+    // Resolve speaker from embedding (if speaker encoder produced one).
+    var speakerId = 'unknown';
+    if (tr.speakerEmbedding != null) {
+      final (id, isNew) = _speakerRegistry.identify(tr.speakerEmbedding!);
+      speakerId = id;
+      if (isNew) {
+        final speaker = _speakerRegistry.speaker(id);
+        if (speaker != null) {
+          ref.read(speakersProvider.notifier).add(speaker);
+        }
+      }
+    }
+
     ref.read(transcriptProvider.notifier).add(TranscriptEntry(
           text: tr.text,
           language: tr.language,
@@ -222,16 +315,35 @@ class PipelineNotifier extends Notifier<PipelineState> {
     }
     _log.info('Rule match: task="${match.task}", timeStr="${match.timeStr}"');
 
-    final scheduledAt =
-        match.timeStr != null ? TimeParser.parse(match.timeStr!) : null;
+    // Refine with LLM when available — falls back to rule match on any failure.
+    String task = match.task;
+    String? timeStr = match.timeStr;
+    double confidence = tr.confidence;
+
+    final extractor = _llmExtractor;
+    if (extractor != null) {
+      final llmResult = await extractor.refine(tr.text, match);
+      switch (llmResult) {
+        case Ok(:final value):
+          task = value.task;
+          timeStr = value.timeStr;
+          confidence = value.confidence;
+          _log.info(
+              'LLM refined: task="$task", timeStr="$timeStr", conf=${confidence.toStringAsFixed(2)}');
+        case Err(:final message):
+          _log.warning('LLM refinement failed: $message — using rule match');
+      }
+    }
+
+    final scheduledAt = timeStr != null ? TimeParser.parse(timeStr) : null;
 
     final reminder = Reminder(
-      task: match.task,
-      timeStr: match.timeStr,
+      task: task,
+      timeStr: timeStr,
       scheduledAt: scheduledAt,
-      speakerId: 'unknown',
+      speakerId: speakerId,
       language: tr.language,
-      confidence: tr.confidence,
+      confidence: confidence,
       transcriptSnippet: tr.text,
       status: ReminderStatus.pending,
       createdAt: DateTime.now(),
@@ -250,11 +362,11 @@ class PipelineNotifier extends Notifier<PipelineState> {
         if (scheduledAt != null) {
           await ref
               .read(schedulerServiceProvider)
-              .scheduleReminder(value, match.task, scheduledAt);
+              .scheduleReminder(value, task, scheduledAt);
         } else {
           await ref
               .read(notificationServiceProvider)
-              .showImmediate(value, match.task);
+              .showImmediate(value, task);
         }
     }
   }
@@ -265,6 +377,10 @@ class PipelineNotifier extends Notifier<PipelineState> {
     await _pcmSub?.cancel();
     _pcmSub = null;
     await _audioSvc.stop();
+    _speakerRegistry.clear();
+    _llmExtractor?.dispose();
+    _llmExtractor = null;
+    ref.read(speakersProvider.notifier).clear();
   }
 }
 

@@ -1,14 +1,20 @@
 #include "whisper_bridge.h"
 #include "whisper.h" // found via target_include_directories → whisper_cpp/include/
 
+#ifdef __ANDROID__
 #include <android/log.h>
+#define _LOG_TAG "WhisperBridge"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  _LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, _LOG_TAG, __VA_ARGS__)
+#else
+#include <cstdio>
+#define LOGI(fmt, ...) fprintf(stdout, "[WhisperBridge] " fmt "\n", ##__VA_ARGS__)
+#define LOGE(fmt, ...) fprintf(stderr, "[WhisperBridge] " fmt "\n", ##__VA_ARGS__)
+#endif
+
 #include <cmath>
 #include <cstring>
 #include <string>
-
-#define LOG_TAG "WhisperBridge"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,    LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR,   LOG_TAG, __VA_ARGS__)
 
 struct WhisperContext {
     whisper_context* wctx;
@@ -16,7 +22,7 @@ struct WhisperContext {
 
 WhisperContext* whisper_bridge_init(const char* model_path) {
     whisper_context_params cparams = whisper_context_default_params();
-    cparams.use_gpu = false; // No GPU Whisper inference on Android in Phase 1
+    cparams.use_gpu = false;
 
     whisper_context* wctx = whisper_init_from_file_with_params(model_path, cparams);
     if (!wctx) {
