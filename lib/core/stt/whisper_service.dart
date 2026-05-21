@@ -9,6 +9,7 @@ import 'package:logging/logging.dart';
 
 import 'package:murmur/core/audio/vad_detector.dart';
 import 'package:murmur/core/result.dart';
+import 'package:murmur/core/stt/speaker_encoder.dart';
 import 'package:murmur/core/stt/whisper_ffi.dart';
 
 final _log = Logger('WhisperService');
@@ -20,11 +21,13 @@ class TranscriptResult {
     required this.text,
     required this.language,
     required this.confidence,
+    this.speakerEmbedding,
   });
 
   final String text;
   final String language; // ISO 639-1
   final double confidence; // [0, 1]
+  final Float32List? speakerEmbedding; // L2-normalised 192-dim, null if encoder not loaded
 }
 
 // ── Isolate helpers ───────────────────────────────────────────────────────────
@@ -42,10 +45,24 @@ Future<void> _handleVadInit(
   }
 }
 
+Future<void> _handleSpeakerEncoderInit(
+    Map<String, dynamic> req, SpeakerEncoder speakerEncoder) async {
+  final modelPath = req['modelPath'] as String;
+  final replyPort = req['replyPort'] as SendPort;
+  final result = await speakerEncoder.load(modelPath);
+  switch (result) {
+    case Ok():
+      replyPort.send({'type': 'ok'});
+    case Err(:final message):
+      replyPort.send({'type': 'error', 'message': message});
+  }
+}
+
 Future<void> _handleDetectAndTranscribe(
   Map<String, dynamic> req,
   Pointer<WhisperContext> ctxPtr,
   VadDetector vadDetector,
+  SpeakerEncoder speakerEncoder,
 ) async {
   final pcmF32 = req['pcmData'] as Float32List;
   final vadThreshold = (req['vadThreshold'] as num?)?.toDouble() ?? 0.5;
@@ -64,14 +81,15 @@ Future<void> _handleDetectAndTranscribe(
     }
   }
 
-  _handleTranscribePcm(pcmF32, ctxPtr, replyPort);
+  await _handleTranscribePcm(pcmF32, ctxPtr, replyPort, speakerEncoder);
 }
 
-void _handleTranscribePcm(
+Future<void> _handleTranscribePcm(
   Float32List pcmF32,
   Pointer<WhisperContext> ctxPtr,
   SendPort replyPort,
-) {
+  SpeakerEncoder speakerEncoder,
+) async {
   final outText = calloc<Utf8>(4096);
   final outLang = calloc<Utf8>(16);
   final outConf = calloc<Float>();
@@ -86,11 +104,24 @@ void _handleTranscribePcm(
     );
 
     if (rc == 0) {
+      // Run speaker encoder on the same PCM if loaded.
+      Float32List? embedding;
+      if (speakerEncoder.isLoaded) {
+        final embResult = await speakerEncoder.embed(pcmF32);
+        switch (embResult) {
+          case Ok(:final value):
+            embedding = value;
+          case Err(:final message):
+            _log.warning('Speaker encoder failed: $message');
+        }
+      }
+
       replyPort.send({
         'type': 'ok',
         'text': outText.toDartString(),
         'lang': outLang.toDartString(),
         'conf': outConf.value,
+        'embedding': embedding, // Float32List? — null if encoder not loaded
       });
     } else {
       replyPort.send({'type': 'error', 'message': 'whisper_bridge_transcribe rc=$rc'});
@@ -143,11 +174,13 @@ void _isolateEntry(Map<String, dynamic> args) {
   mainPort.send({'type': 'ready', 'port': requestPort.sendPort});
 
   final vadDetector = VadDetector();
+  final speakerEncoder = SpeakerEncoder();
 
   requestPort.listen((dynamic message) async {
     if (message == null) {
       WhisperFfi.instance.free(ctxPtr);
       vadDetector.dispose();
+      speakerEncoder.dispose();
       requestPort.close();
       return;
     }
@@ -158,12 +191,14 @@ void _isolateEntry(Map<String, dynamic> args) {
     switch (type) {
       case 'init_vad':
         await _handleVadInit(req, vadDetector);
+      case 'init_speaker_encoder':
+        await _handleSpeakerEncoderInit(req, speakerEncoder);
       case 'detect_and_transcribe':
-        await _handleDetectAndTranscribe(req, ctxPtr, vadDetector);
+        await _handleDetectAndTranscribe(req, ctxPtr, vadDetector, speakerEncoder);
       case 'transcribe':
         final pcmF32 = req['pcmData'] as Float32List;
         final replyPort = req['replyPort'] as SendPort;
-        _handleTranscribePcm(pcmF32, ctxPtr, replyPort);
+        await _handleTranscribePcm(pcmF32, ctxPtr, replyPort, speakerEncoder);
     }
   });
 }
@@ -258,9 +293,49 @@ class WhisperService {
     return const Ok(null);
   }
 
-  /// Run VAD then (if speech detected) Whisper transcription.
+  /// Initialise the ECAPA-TDNN speaker encoder inside the Whisper isolate.
+  Future<Result<void>> initSpeakerEncoder(String modelPath) async {
+    if (!_initialized || _isolateSendPort == null) {
+      return const Err('WhisperService not initialized');
+    }
+
+    final replyPort = ReceivePort();
+    _isolateSendPort!.send({
+      'type': 'init_speaker_encoder',
+      'modelPath': modelPath,
+      'replyPort': replyPort.sendPort,
+    });
+
+    dynamic response;
+    try {
+      response = await replyPort.first.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          replyPort.close();
+          return null;
+        },
+      );
+    } catch (e) {
+      replyPort.close();
+      return Err('initSpeakerEncoder() exception: $e', cause: e as Object);
+    }
+
+    if (response == null) return const Err('Speaker encoder init timed out');
+
+    final msg = response as Map<String, dynamic>;
+    if (msg['type'] == 'error') {
+      return Err('Speaker encoder init failed: ${msg['message']}');
+    }
+
+    _log.info('Speaker encoder ready, model=$modelPath');
+    return const Ok(null);
+  }
+
+  /// Run VAD then (if speech detected) Whisper + speaker encoding.
   ///
-  /// Returns [Ok(null)] for silent segments, [Ok(TranscriptResult)] for speech.
+  /// Returns [Ok(null)] for silent segments.
+  /// Returns [Ok(TranscriptResult)] for speech; [speakerEmbedding] is non-null
+  /// only when the speaker encoder was previously initialised.
   /// Set [vadThreshold] to 0.0 to skip VAD and always transcribe.
   Future<Result<TranscriptResult?>> detectAndTranscribe(
     Int16List pcm, {
@@ -307,6 +382,7 @@ class WhisperService {
           text: (msg['text'] as String).trim(),
           language: msg['lang'] as String,
           confidence: (msg['conf'] as num).toDouble(),
+          speakerEmbedding: msg['embedding'] as Float32List?,
         ));
     }
   }

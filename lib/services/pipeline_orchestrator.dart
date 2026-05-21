@@ -11,12 +11,15 @@ import 'package:murmur/core/audio/ring_buffer.dart';
 import 'package:murmur/core/nlp/rule_engine.dart';
 import 'package:murmur/core/nlp/time_parser.dart';
 import 'package:murmur/core/result.dart';
+import 'package:murmur/core/stt/speaker_registry.dart';
 import 'package:murmur/core/stt/whisper_service.dart';
 import 'package:murmur/data/database/reminder_dao.dart';
 import 'package:murmur/data/models/reminder.dart';
 import 'package:murmur/features/reminders/reminders_provider.dart';
 import 'package:murmur/features/settings/settings_provider.dart';
+import 'package:murmur/features/speakers/speakers_provider.dart';
 import 'package:murmur/features/transcript/transcript_provider.dart';
+import 'package:murmur/services/llm_extractor.dart';
 import 'package:murmur/services/model_manager.dart';
 import 'package:murmur/services/notification_service.dart';
 import 'package:murmur/services/scheduler_service.dart';
@@ -65,6 +68,8 @@ class PipelineNotifier extends Notifier<PipelineState> {
   late final WhisperService _whisperSvc;
   late final RingBuffer _ringBuffer;
   late final RuleEngine _ruleEngine;
+  late final SpeakerRegistry _speakerRegistry;
+  LlmExtractor? _llmExtractor;
 
   StreamSubscription<Uint8List>? _pcmSub;
   Timer? _flushTimer;
@@ -79,6 +84,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _whisperSvc = ref.read(_whisperServiceProvider);
     _ringBuffer = ref.read(_ringBufferProvider);
     _ruleEngine = ref.read(_ruleEngineProvider);
+    _speakerRegistry = SpeakerRegistry();
     ref.onDispose(_cleanup);
     return const PipelineIdle();
   }
@@ -120,6 +126,22 @@ class PipelineNotifier extends Notifier<PipelineState> {
         case Err(:final message):
           _log.warning('VAD model unavailable: $message — running without VAD');
       }
+    }
+
+    // Init speaker encoder if enabled.
+    if (settings.speakerEncoderEnabled) {
+      final encResult = await _whisperSvc.initSpeakerEncoder(settings.speakerModelPath);
+      switch (encResult) {
+        case Err(:final message):
+          _log.warning('Speaker encoder init failed: $message — running without diarization');
+        case Ok():
+          break;
+      }
+    }
+
+    // Prepare LLM extractor (lazy — not loaded until first use).
+    if (settings.llmEnabled) {
+      _llmExtractor = LlmExtractor(modelPath: settings.gemmaModelPath);
     }
 
     // Load rule engine patterns.
@@ -208,6 +230,19 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _log.info(
         'Transcript: "${tr.text}" (${tr.language}, conf=${tr.confidence.toStringAsFixed(2)})');
 
+    // Resolve speaker from embedding (if speaker encoder produced one).
+    var speakerId = 'unknown';
+    if (tr.speakerEmbedding != null) {
+      final (id, isNew) = _speakerRegistry.identify(tr.speakerEmbedding!);
+      speakerId = id;
+      if (isNew) {
+        final speaker = _speakerRegistry.speaker(id);
+        if (speaker != null) {
+          ref.read(speakersProvider.notifier).add(speaker);
+        }
+      }
+    }
+
     ref.read(transcriptProvider.notifier).add(TranscriptEntry(
           text: tr.text,
           language: tr.language,
@@ -222,16 +257,34 @@ class PipelineNotifier extends Notifier<PipelineState> {
     }
     _log.info('Rule match: task="${match.task}", timeStr="${match.timeStr}"');
 
-    final scheduledAt =
-        match.timeStr != null ? TimeParser.parse(match.timeStr!) : null;
+    // Refine with LLM when available — falls back to rule match on any failure.
+    String task = match.task;
+    String? timeStr = match.timeStr;
+    double confidence = tr.confidence;
+
+    final extractor = _llmExtractor;
+    if (extractor != null) {
+      final llmResult = await extractor.refine(tr.text, match);
+      switch (llmResult) {
+        case Ok(:final value):
+          task = value.task;
+          timeStr = value.timeStr;
+          confidence = value.confidence;
+          _log.info('LLM refined: task="$task", timeStr="$timeStr", conf=${confidence.toStringAsFixed(2)}');
+        case Err(:final message):
+          _log.warning('LLM refinement failed: $message — using rule match');
+      }
+    }
+
+    final scheduledAt = timeStr != null ? TimeParser.parse(timeStr) : null;
 
     final reminder = Reminder(
-      task: match.task,
-      timeStr: match.timeStr,
+      task: task,
+      timeStr: timeStr,
       scheduledAt: scheduledAt,
-      speakerId: 'unknown',
+      speakerId: speakerId,
       language: tr.language,
-      confidence: tr.confidence,
+      confidence: confidence,
       transcriptSnippet: tr.text,
       status: ReminderStatus.pending,
       createdAt: DateTime.now(),
@@ -250,11 +303,11 @@ class PipelineNotifier extends Notifier<PipelineState> {
         if (scheduledAt != null) {
           await ref
               .read(schedulerServiceProvider)
-              .scheduleReminder(value, match.task, scheduledAt);
+              .scheduleReminder(value, task, scheduledAt);
         } else {
           await ref
               .read(notificationServiceProvider)
-              .showImmediate(value, match.task);
+              .showImmediate(value, task);
         }
     }
   }
@@ -265,6 +318,10 @@ class PipelineNotifier extends Notifier<PipelineState> {
     await _pcmSub?.cancel();
     _pcmSub = null;
     await _audioSvc.stop();
+    _speakerRegistry.clear();
+    _llmExtractor?.dispose();
+    _llmExtractor = null;
+    ref.read(speakersProvider.notifier).clear();
   }
 }
 

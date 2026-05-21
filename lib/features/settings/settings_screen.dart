@@ -56,6 +56,34 @@ class SettingsScreen extends ConsumerWidget {
               isThreeLine: true,
             ),
             const Divider(),
+            const _SectionHeader('Speaker Diarization'),
+            SwitchListTile(
+              title: const Text('Enable speaker encoder'),
+              subtitle: const Text('Identify who is speaking using ECAPA-TDNN'),
+              value: settings.speakerEncoderEnabled,
+              onChanged: (v) =>
+                  ref.read(settingsProvider.notifier).setSpeakerEncoderEnabled(v),
+            ),
+            ListTile(
+              title: const Text('Speaker model path'),
+              subtitle: Text(settings.speakerModelPath),
+              enabled: settings.speakerEncoderEnabled,
+            ),
+            const Divider(),
+            const _SectionHeader('LLM Extraction'),
+            SwitchListTile(
+              title: const Text('Enable Gemma LLM'),
+              subtitle: const Text('Refine reminder extraction with on-device Gemma'),
+              value: settings.llmEnabled,
+              onChanged: (v) =>
+                  ref.read(settingsProvider.notifier).setLlmEnabled(v),
+            ),
+            ListTile(
+              title: const Text('Gemma model path'),
+              subtitle: Text(settings.gemmaModelPath),
+              enabled: settings.llmEnabled,
+            ),
+            const Divider(),
             const _SectionHeader('Models'),
             ListTile(
               title: const Text('Whisper model path'),
