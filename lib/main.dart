@@ -24,6 +24,7 @@ void main() async {
     if (rec.stackTrace != null) debugPrint('  stack: ${rec.stackTrace}');
   });
 
+  // POST_NOTIFICATIONS permission is requested at runtime by flutter_local_notifications on Android 13+
   await NotificationService().initialize();
 
   runApp(

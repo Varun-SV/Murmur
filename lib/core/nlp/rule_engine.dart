@@ -7,6 +7,40 @@ import 'package:murmur/core/result.dart';
 
 final _log = Logger('RuleEngine');
 
+// Hardcoded fallback patterns used when the JSON asset fails to load.
+const _kFallbackPatterns = <Map<String, dynamic>>[
+  {
+    'pattern': r"remind me to (.+?) (?:at|by) (.+)",
+    'taskGroup': 1,
+    'timeGroup': 2,
+  },
+  {
+    'pattern': r"don't forget to (.+)",
+    'taskGroup': 1,
+    'timeGroup': null,
+  },
+  {
+    'pattern': r"remember to (.+?) (?:at|by) (.+)",
+    'taskGroup': 1,
+    'timeGroup': 2,
+  },
+  {
+    'pattern': r"set a reminder (?:for|to) (.+)",
+    'taskGroup': 1,
+    'timeGroup': null,
+  },
+  {
+    'pattern': r"add a reminder (?:for|to) (.+)",
+    'taskGroup': 1,
+    'timeGroup': null,
+  },
+  {
+    'pattern': r"note to self[: ](.+)",
+    'taskGroup': 1,
+    'timeGroup': null,
+  },
+];
+
 class RuleMatch {
   const RuleMatch({
     required this.task,
@@ -40,8 +74,8 @@ class RuleEngine {
       final json = await bundle.loadString('assets/patterns/reminder_patterns.json');
       return loadFromJson(json);
     } catch (e, st) {
-      _log.severe('Failed to load patterns asset', e, st);
-      return Err('Failed to load reminder patterns: $e', cause: e as Object);
+      _log.warning('Failed to load patterns asset — using built-in fallback patterns', e, st);
+      return _loadFallback();
     }
   }
 
@@ -52,19 +86,29 @@ class RuleEngine {
       for (final entry in data.entries) {
         final lang = entry.key;
         final patternList = entry.value as List<dynamic>;
-        _patterns[lang] = patternList.map((p) {
+        final compiled = <_PatternEntry>[];
+        for (final p in patternList) {
           final map = p as Map<String, dynamic>;
-          return _PatternEntry(
-            regex: RegExp(
-              map['pattern'] as String,
+          final patternStr = map['pattern'] as String;
+          RegExp re;
+          try {
+            re = RegExp(
+              patternStr,
               caseSensitive: false,
               multiLine: false,
               unicode: true,
-            ),
+            );
+          } on FormatException catch (fe) {
+            _log.warning('Skipping invalid regex pattern "$patternStr": $fe');
+            continue;
+          }
+          compiled.add(_PatternEntry(
+            regex: re,
             taskGroup: map['taskGroup'] as int,
             timeGroup: map['timeGroup'] as int?,
-          );
-        }).toList();
+          ));
+        }
+        _patterns[lang] = compiled;
       }
       _loaded = true;
       _log.info('Loaded patterns for languages: ${_patterns.keys.join(', ')}');
@@ -73,6 +117,30 @@ class RuleEngine {
       _log.severe('Failed to parse patterns JSON', e, st);
       return Err('Failed to parse reminder patterns: $e', cause: e as Object);
     }
+  }
+
+  Result<void> _loadFallback() {
+    _patterns.clear();
+    final compiled = <_PatternEntry>[];
+    for (final map in _kFallbackPatterns) {
+      final patternStr = map['pattern'] as String;
+      RegExp re;
+      try {
+        re = RegExp(patternStr, caseSensitive: false);
+      } on FormatException catch (fe) {
+        _log.warning('Skipping invalid fallback regex "$patternStr": $fe');
+        continue;
+      }
+      compiled.add(_PatternEntry(
+        regex: re,
+        taskGroup: map['taskGroup'] as int,
+        timeGroup: map['timeGroup'] as int?,
+      ));
+    }
+    _patterns['en'] = compiled;
+    _loaded = true;
+    _log.warning('Using built-in fallback English patterns (${compiled.length} patterns)');
+    return const Ok(null);
   }
 
   RuleMatch? match(String text, String language) {

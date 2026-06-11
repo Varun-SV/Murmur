@@ -1,20 +1,27 @@
 package com.murmur.app
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 class MurmurForegroundService : Service() {
 
@@ -47,6 +54,8 @@ class MurmurForegroundService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var audioRecord: AudioRecord? = null
     private var recordingThread: Thread? = null
+    private var audioManager: AudioManager? = null
+    private var focusRequest: AudioFocusRequest? = null
 
     @Volatile
     private var isCapturing = false
@@ -67,7 +76,7 @@ class MurmurForegroundService : Service() {
             startCapture()
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -77,6 +86,19 @@ class MurmurForegroundService : Service() {
     }
 
     private fun startCapture() {
+        // Permission guard: bail early if RECORD_AUDIO has not been granted.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "RECORD_AUDIO permission not granted")
+            mainHandler.post {
+                AudioCaptureChannel.pcmEventSink?.error(
+                    "NO_PERMISSION", "RECORD_AUDIO not granted", null,
+                )
+            }
+            return
+        }
+
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -102,12 +124,30 @@ class MurmurForegroundService : Service() {
             return
         }
 
+        // Request audio focus so the system knows we are actively capturing voice.
+        val mgr = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager = mgr
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setWillPauseWhenDucked(false)
+                .build()
+            mgr.requestAudioFocus(req)
+            focusRequest = req
+        }
+
         audioRecord = record
         isCapturing = true
         isRunning = true
         record.startRecording()
 
         recordingThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             val buf = ByteArray(CHUNK_SIZE_BYTES)
             while (isCapturing) {
                 val bytesRead = record.read(buf, 0, buf.size)
@@ -137,10 +177,21 @@ class MurmurForegroundService : Service() {
     private fun stopCapture() {
         isCapturing = false
         audioRecord?.stop()
-        recordingThread?.join(1000)
+
+        // Wait up to 2 seconds for the recording thread to finish cleanly.
+        recordingThread?.join(2000)
+        recordingThread = null
+
         audioRecord?.release()
         audioRecord = null
-        recordingThread = null
+
+        // Abandon audio focus acquired in startCapture().
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            focusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+        }
+        focusRequest = null
+        audioManager = null
+
         Log.i(TAG, "Audio capture stopped")
     }
 

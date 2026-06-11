@@ -144,5 +144,91 @@
       "timeGroup": 2,
       "note": "রিপোর্ট জমা দিতে হবে"
     }
+  ],
+  "zh": [
+    {
+      "pattern": "提醒我(.+?)(?:在|于)(.+)",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "提醒我开会在下午三点"
+    },
+    {
+      "pattern": "记得(.+?)(?:在|于)(.+)",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "记得买东西在明天"
+    },
+    {
+      "pattern": "别忘了(.+)",
+      "taskGroup": 1,
+      "timeGroup": null,
+      "note": "别忘了打电话"
+    },
+    {
+      "pattern": "提醒一下(.+)",
+      "taskGroup": 1,
+      "timeGroup": null,
+      "note": "提醒一下明天有会议"
+    }
+  ],
+  "ar": [
+    {
+      "pattern": "ذكرني (?:بـ|أن) (.+?) في (.+)",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "ذكرني بأن أتصل بالطبيب في الساعة الثالثة"
+    },
+    {
+      "pattern": "لا تنس (.+)",
+      "taskGroup": 1,
+      "timeGroup": null,
+      "note": "لا تنس موعد الاجتماع"
+    },
+    {
+      "pattern": "تذكر (.+?) في (.+)",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "تذكر الدواء في الصباح"
+    }
+  ],
+  "pt": [
+    {
+      "pattern": "me lembra(?:r)? (?:de )(.+?) (?:às?|em) (.+)",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "me lembrar de ligar às 3"
+    },
+    {
+      "pattern": "não (?:me )?esqueças? (?:de )?(.+)",
+      "taskGroup": 1,
+      "timeGroup": null,
+      "note": "não esqueças de comprar leite"
+    },
+    {
+      "pattern": "lembrete (?:para|de) (.+?) (?:às?|em) (.+)",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "lembrete para reunião às 10"
+    }
+  ],
+  "ko": [
+    {
+      "pattern": "(.+?)(?:을|를) (.+?)에 알려줘",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "회의를 내일에 알려줘"
+    },
+    {
+      "pattern": "(.+?) 잊지 마",
+      "taskGroup": 1,
+      "timeGroup": null,
+      "note": "약 먹는 거 잊지 마"
+    },
+    {
+      "pattern": "(.+?)에 (.+?) 리마인더",
+      "taskGroup": 1,
+      "timeGroup": 2,
+      "note": "내일에 회의 리마인더"
+    }
   ]
 }

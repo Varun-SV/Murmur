@@ -79,7 +79,16 @@ class PipelineNotifier extends Notifier<PipelineState> {
 
   StreamSubscription<Uint8List>? _pcmSub;
   Timer? _flushTimer;
-  bool _isTranscribing = false;
+
+  // Replaces bool _isTranscribing — non-null and incomplete while a flush is running.
+  Completer<void>? _transcriptionCompleter;
+
+  // Auto-recovery state.
+  int _errorRetries = 0;
+  Timer? _recoveryTimer;
+
+  // Last-seen whisperModelPath for change detection.
+  String? _lastWhisperModelPath;
 
   static const _flushInterval = Duration(seconds: 30);
 
@@ -90,9 +99,49 @@ class PipelineNotifier extends Notifier<PipelineState> {
     _ringBuffer = ref.read(_ringBufferProvider);
     _ruleEngine = ref.read(_ruleEngineProvider);
     _speakerRegistry = SpeakerRegistry();
+
+    // Watch settingsProvider to detect whisperModelPath changes while recording.
+    ref.listen<AsyncValue<AppSettings>>(settingsProvider, (previous, next) {
+      final newPath = next.valueOrNull?.whisperModelPath;
+      if (newPath != null &&
+          _lastWhisperModelPath != null &&
+          newPath != _lastWhisperModelPath &&
+          state is PipelineRecording) {
+        _log.warning('Model path changed — restart pipeline to apply.');
+      }
+      if (newPath != null) {
+        _lastWhisperModelPath = newPath;
+      }
+    });
+
     ref.onDispose(_cleanup);
     return const PipelineIdle();
   }
+
+  // ── Error recovery ────────────────────────────────────────────────────────────
+
+  void _setError(String message) {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+
+    state = PipelineError(message);
+
+    if (_errorRetries < 3) {
+      _errorRetries++;
+      _log.warning(
+          'Pipeline error (attempt $_errorRetries/3): $message — auto-recovering in 5 s');
+      _recoveryTimer?.cancel();
+      _recoveryTimer = Timer(const Duration(seconds: 5), () {
+        _recoveryTimer = null;
+        startPipeline();
+      });
+    } else {
+      _log.severe(
+          'Pipeline error after 3 retries: $message — giving up auto-recovery');
+    }
+  }
+
+  // ── Public API ────────────────────────────────────────────────────────────────
 
   Future<void> startPipeline() async {
     if (state is PipelineRecording || state is PipelineTranscribing) return;
@@ -101,13 +150,14 @@ class PipelineNotifier extends Notifier<PipelineState> {
 
     // Load settings first — all model paths come from here.
     final settings = await ref.read(settingsProvider.future);
+    _lastWhisperModelPath = settings.whisperModelPath;
 
     _log.info('Initialising Whisper with model: ${settings.whisperModelPath}');
     final initResult = await _whisperSvc.initialize(settings.whisperModelPath);
 
     switch (initResult) {
       case Err(:final message):
-        state = PipelineError(message);
+        _setError(message);
         _log.severe('Whisper init failed: $message');
         return;
       case Ok():
@@ -170,7 +220,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
       (chunk) => _ringBuffer.write(chunk),
       onError: (Object e, StackTrace st) {
         _log.severe('PCM stream error', e, st);
-        state = PipelineError('Audio stream error: $e');
+        _setError('Audio stream error: $e');
       },
     );
 
@@ -179,7 +229,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
       case Err(:final message):
         await _pcmSub?.cancel();
         _pcmSub = null;
-        state = PipelineError(message);
+        _setError(message);
         _log.severe('Audio capture start failed: $message');
         return;
       case Ok():
@@ -187,6 +237,10 @@ class PipelineNotifier extends Notifier<PipelineState> {
     }
 
     _flushTimer = Timer.periodic(_flushInterval, _onFlushTick);
+
+    // Successful start — reset retry counter.
+    _errorRetries = 0;
+
     state = PipelineRecording(degradedFeatures: degraded);
     _log.info(
         'Pipeline started — flushing every ${_flushInterval.inSeconds}s'
@@ -194,6 +248,17 @@ class PipelineNotifier extends Notifier<PipelineState> {
   }
 
   Future<void> stopPipeline() async {
+    // Wait for any in-flight transcription to finish (or time out) before
+    // tearing down resources.
+    final completer = _transcriptionCompleter;
+    if (completer != null && !completer.isCompleted) {
+      _log.info('stopPipeline: waiting for in-flight transcription (max 45 s)');
+      await completer.future.timeout(
+        const Duration(seconds: 45),
+        onTimeout: () {},
+      );
+    }
+
     await _cleanup();
     state = const PipelineIdle();
     _log.info('Pipeline stopped');
@@ -222,7 +287,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
       (chunk) => _ringBuffer.write(chunk),
       onError: (Object e, StackTrace st) {
         _log.severe('PCM stream error on resume', e, st);
-        state = PipelineError('Audio stream error: $e');
+        _setError('Audio stream error: $e');
       },
     );
 
@@ -231,7 +296,7 @@ class PipelineNotifier extends Notifier<PipelineState> {
       case Err(:final message):
         await _pcmSub?.cancel();
         _pcmSub = null;
-        state = PipelineError(message);
+        _setError(message);
         _log.severe('Audio resume failed: $message');
         return;
       case Ok():
@@ -243,7 +308,9 @@ class PipelineNotifier extends Notifier<PipelineState> {
   }
 
   void _onFlushTick(Timer _) async {
-    if (_isTranscribing) {
+    // Skip if a transcription is already in progress.
+    final existing = _transcriptionCompleter;
+    if (existing != null && !existing.isCompleted) {
       _log.warning('Flush skipped — previous transcription still running');
       return;
     }
@@ -254,7 +321,10 @@ class PipelineNotifier extends Notifier<PipelineState> {
       return;
     }
 
-    _isTranscribing = true;
+    // Mark transcription as in-flight.
+    final completer = Completer<void>();
+    _transcriptionCompleter = completer;
+
     state = const PipelineTranscribing();
     _log.info(
         'Transcribing ${pcm.length} samples (${(pcm.length / 16000).toStringAsFixed(1)}s)');
@@ -266,7 +336,8 @@ class PipelineNotifier extends Notifier<PipelineState> {
       vadThreshold: settings.vadEnabled ? settings.vadThreshold : 0.0,
     );
 
-    _isTranscribing = false;
+    // Mark transcription complete before any state mutation.
+    completer.complete();
 
     switch (result) {
       case Ok(:final value):
@@ -372,6 +443,8 @@ class PipelineNotifier extends Notifier<PipelineState> {
   }
 
   Future<void> _cleanup() async {
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
     _flushTimer?.cancel();
     _flushTimer = null;
     await _pcmSub?.cancel();
