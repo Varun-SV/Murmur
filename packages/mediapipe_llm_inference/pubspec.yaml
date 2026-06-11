@@ -1,0 +1,7 @@
+name: mediapipe_llm_inference
+description: Stub for MediaPipe on-device LLM inference. The real implementation ships as a native plugin and is not available on pub.dev.
+version: 0.10.0
+publish_to: none
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
