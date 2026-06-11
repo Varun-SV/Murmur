@@ -25,6 +25,8 @@ class AudioCaptureChannel: NSObject {
   private let engine = AVAudioEngine()
   private var eventSink: FlutterEventSink?
   private var isCapturing = false
+  // Converter created once in startCapture() and reused across tap callbacks.
+  private var converter: AVAudioConverter?
 
   func register(with binaryMessenger: FlutterBinaryMessenger) {
     let methodChannel = FlutterMethodChannel(
@@ -63,7 +65,13 @@ class AudioCaptureChannel: NSObject {
 
     let session = AVAudioSession.sharedInstance()
     do {
-      try session.setCategory(.record, mode: .measurement, options: [])
+      // Use .playAndRecord with .measurement mode so Murmur does not interrupt
+      // other audio (music, podcasts). .mixWithOthers prevents session takeover.
+      try session.setCategory(
+        .playAndRecord,
+        mode: .measurement,
+        options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
+      )
       try session.setActive(true)
     } catch {
       result(FlutterError(code: "AUDIO_SESSION", message: error.localizedDescription, details: nil))
@@ -83,18 +91,36 @@ class AudioCaptureChannel: NSObject {
       return
     }
 
-    // Converter from the device's native format to 16 kHz mono Float32.
-    guard let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
+    // Create the converter once here; reuse it in every tap callback.
+    guard let audioConverter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
       result(FlutterError(code: "CONVERTER", message: "Cannot create audio converter", details: nil))
       return
     }
+    converter = audioConverter
 
     inputNode.installTap(
       onBus: 0,
       bufferSize: AVAudioFrameCount(nativeFormat.sampleRate * 0.2), // ~200 ms native
       format: nativeFormat
     ) { [weak self] buffer, _ in
-      self?.processTap(buffer: buffer, converter: converter, targetFormat: targetFormat)
+      self?.processTap(buffer: buffer, targetFormat: targetFormat)
+    }
+
+    engine.prepare()
+
+    // Observe engine configuration changes (e.g. audio route change, sample-rate shift).
+    // When this fires we stop capture and notify the Dart side so it can reconnect.
+    NotificationCenter.default.addObserver(
+      forName: AVAudioEngine.configurationChangeNotification,
+      object: engine,
+      queue: nil
+    ) { [weak self] _ in
+      self?.stopCapture()
+      self?.eventSink?(FlutterError(
+        code: "AUDIO_CONFIG_CHANGED",
+        message: "Audio engine configuration changed",
+        details: nil
+      ))
     }
 
     do {
@@ -110,24 +136,34 @@ class AudioCaptureChannel: NSObject {
 
   private func stopCapture() {
     guard isCapturing else { return }
+    NotificationCenter.default.removeObserver(
+      self,
+      name: AVAudioEngine.configurationChangeNotification,
+      object: engine
+    )
     engine.inputNode.removeTap(onBus: 0)
     engine.stop()
+    converter = nil
     try? AVAudioSession.sharedInstance().setActive(false)
     isCapturing = false
   }
 
   private func processTap(
     buffer: AVAudioPCMBuffer,
-    converter: AVAudioConverter,
     targetFormat: AVAudioFormat
   ) {
+    // Nil-guard: if the Dart side has not subscribed (or cancelled), skip work.
+    guard let sink = self.eventSink else { return }
+
+    guard let conv = self.converter else { return }
+
     let targetFrames = AVAudioFrameCount(Self.sampleRate * 0.2) // 200 ms at 16 kHz
     guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetFrames)
     else { return }
 
     var error: NSError?
     var inputDone = false
-    converter.convert(to: converted, error: &error) { _, outStatus in
+    conv.convert(to: converted, error: &error) { _, outStatus in
       if inputDone {
         outStatus.pointee = .noDataNow
         return nil
@@ -149,10 +185,9 @@ class AudioCaptureChannel: NSObject {
       int16Bytes[i * 2 + 1] = UInt8(bitPattern: Int8(truncatingIfNeeded: (int16 >> 8) & 0xFF))
     }
 
+    // The FlutterEventChannel sink is thread-safe; call directly on the audio thread.
     let data = FlutterStandardTypedData(bytes: Data(int16Bytes))
-    DispatchQueue.main.async { [weak self] in
-      self?.eventSink?(data)
-    }
+    sink(data)
   }
 }
 

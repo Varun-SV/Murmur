@@ -18,8 +18,17 @@ class RingBuffer {
   int _writeHead = 0; // Next write position (mod _capacity)
   int _count = 0; // Samples currently held (≤ _capacity)
 
+  /// Number of bytes dropped due to invalid input (e.g. odd byte count).
+  int droppedFrames = 0;
+
+  /// Total bytes successfully written since the last [reset].
+  int totalBytesWritten = 0;
+
   bool get isEmpty => _count == 0;
   int get count => _count;
+
+  /// Capacity in samples.
+  int get capacity => _capacity;
 
   /// Write raw PCM bytes (int16 LE) into the ring buffer.
   ///
@@ -29,6 +38,7 @@ class RingBuffer {
     if (pcmBytes.lengthInBytes.isOdd) {
       _log.warning(
           'write() received odd byte count (${pcmBytes.lengthInBytes}) — dropping');
+      droppedFrames++;
       return;
     }
 
@@ -52,11 +62,17 @@ class RingBuffer {
 
     _writeHead = (_writeHead + n) % _capacity;
     _count = (_count + n).clamp(0, _capacity);
+    totalBytesWritten += pcmBytes.length;
+
+    if (_count == _capacity) {
+      _log.warning('RingBuffer full — oldest audio is being overwritten');
+    }
   }
 
   /// Return all buffered samples in chronological order and reset the buffer.
   ///
   /// Returns an empty [Int16List] if the buffer is empty.
+  /// Does NOT reset [droppedFrames] or [totalBytesWritten] — call [reset] for that.
   Int16List flush() {
     if (_count == 0) return Int16List(0);
 
@@ -74,5 +90,12 @@ class RingBuffer {
     _writeHead = 0;
     _count = 0;
     return out;
+  }
+
+  /// Flush the buffer and reset all metrics ([droppedFrames], [totalBytesWritten]).
+  void reset() {
+    flush();
+    droppedFrames = 0;
+    totalBytesWritten = 0;
   }
 }

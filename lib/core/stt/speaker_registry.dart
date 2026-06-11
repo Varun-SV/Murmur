@@ -44,9 +44,15 @@ class SpeakerRegistry {
     // New speaker.
     final newId = 'spk_${_centroids.length + 1}';
     final label = 'Speaker ${_centroids.length + 1}';
-    _centroids[newId] = _l2Normalize(embedding);
+    final normalised = _l2Normalize(embedding);
+    _centroids[newId] = normalised;
     _counts[newId] = 1;
-    _speakers[newId] = Speaker(id: newId, label: label, firstSeen: DateTime.now());
+    _speakers[newId] = Speaker(
+      id: newId,
+      label: label,
+      firstSeen: DateTime.now(),
+      centroid: normalised,
+    );
     _log.info('New speaker: $newId "$label"');
     return (newId, true);
   }

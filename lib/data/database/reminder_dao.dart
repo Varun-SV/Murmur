@@ -28,7 +28,11 @@ class ReminderDao {
     }
   }
 
-  Future<Result<List<Reminder>>> queryByStatus(ReminderStatus status) async {
+  Future<Result<List<Reminder>>> queryByStatus(
+    ReminderStatus status, {
+    int? limit,
+    int? offset,
+  }) async {
     try {
       final db = await _db;
       final rows = await db.query(
@@ -36,6 +40,8 @@ class ReminderDao {
         where: 'status = ?',
         whereArgs: [status.name],
         orderBy: 'created_at DESC',
+        limit: limit,
+        offset: offset,
       );
       return Ok(rows.map(Reminder.fromMap).toList());
     } catch (e, st) {
@@ -44,13 +50,17 @@ class ReminderDao {
     }
   }
 
-  Future<Result<List<Reminder>>> queryAll({int limit = 100}) async {
+  Future<Result<List<Reminder>>> queryAll({
+    int? limit,
+    int? offset,
+  }) async {
     try {
       final db = await _db;
       final rows = await db.query(
         'reminders',
         orderBy: 'created_at DESC',
         limit: limit,
+        offset: offset,
       );
       return Ok(rows.map(Reminder.fromMap).toList());
     } catch (e, st) {
@@ -75,6 +85,29 @@ class ReminderDao {
     }
   }
 
+  Future<Result<void>> updateStatusBulk(
+    List<int> ids,
+    ReminderStatus status,
+  ) async {
+    try {
+      final db = await _db;
+      await db.transaction((txn) async {
+        for (final id in ids) {
+          await txn.update(
+            'reminders',
+            {'status': status.name},
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+        }
+      });
+      return const Ok(null);
+    } catch (e, st) {
+      _log.severe('updateStatusBulk failed', e, st);
+      return Err('Failed to bulk-update reminder statuses: $e', cause: e as Object);
+    }
+  }
+
   Future<Result<void>> delete(int id) async {
     try {
       final db = await _db;
@@ -83,6 +116,42 @@ class ReminderDao {
     } catch (e, st) {
       _log.severe('delete failed', e, st);
       return Err('Failed to delete reminder: $e', cause: e as Object);
+    }
+  }
+
+  Future<Result<List<Reminder>>> searchByTask(String query) async {
+    try {
+      final db = await _db;
+      final rows = await db.query(
+        'reminders',
+        where: 'task LIKE ?',
+        whereArgs: ['%$query%'],
+        orderBy: 'created_at DESC',
+      );
+      return Ok(rows.map(Reminder.fromMap).toList());
+    } catch (e, st) {
+      _log.severe('searchByTask failed', e, st);
+      return Err('Failed to search reminders: $e', cause: e as Object);
+    }
+  }
+
+  Future<Result<List<Reminder>>> queryPending() =>
+      queryByStatus(ReminderStatus.pending);
+
+  Future<Result<List<Reminder>>> queryOverdueSnoozes() async {
+    try {
+      final db = await _db;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final rows = await db.query(
+        'reminders',
+        where: "status = 'snoozed' AND scheduled_at < ?",
+        whereArgs: [nowMs],
+        orderBy: 'scheduled_at ASC',
+      );
+      return Ok(rows.map(Reminder.fromMap).toList());
+    } catch (e, st) {
+      _log.severe('queryOverdueSnoozes failed', e, st);
+      return Err('Failed to query overdue snoozes: $e', cause: e as Object);
     }
   }
 }
